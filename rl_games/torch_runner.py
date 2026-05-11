@@ -251,6 +251,59 @@ class Runner:
         player = self.create_player()
         _restore(player, args)
         _override_sigma(player, args)
+
+        test_input = {}
+        test_obs = torch.ones((1, player.obs_shape[0]), device='cuda', dtype=torch.float32)
+        test_input['obs'] = test_obs
+        test_input['is_train'] = False
+        test_input['prev_actions'] = None
+        # test_actions = player.get_actions(test_obs, is_deterministic=True)
+
+        # save frozen script model player
+        # network = player.model.a2c_network
+        # scripted_model = torch.jit.script(player.model.a2c_network)
+        # scripted_player = torch.jit.trace(player.model.a2c_network, example_inputs={'obs': torch.zeros((1, player.obs_shape[0]), device='cuda',dtype=torch.float32) })
+        # scripted_player = torch.jit.trace(player.model.a2c_network.forward_scriptable, example_inputs=test_obs)
+        # scripted_player.save("frozen_player.pt")
+
+        class ModelWrapper(torch.nn.Module):
+            '''
+            Main idea is to ignore outputs which we don't need from model
+            '''
+            def __init__(self, model):
+                torch.nn.Module.__init__(self)
+                self._model = model
+                
+                
+            def forward(self,input_dict):
+                input_dict['obs'] = self._model.norm_obs(input_dict['obs'])
+                '''
+                just model export doesn't work. Looks like onnx issue with torch distributions
+                thats why we are exporting only neural network
+                '''
+                #print(input_dict)
+                #output_dict = self._model.a2c_network(input_dict)
+                #input_dict['is_train'] = False
+                #return output_dict['logits'], output_dict['values']
+                mu, _, _, _ = self._model.a2c_network(input_dict)
+                return mu
+
+        wrapped_model = ModelWrapper(player.model)
+
+        # from rl_games.algos_torch.flatten import TracingAdapter
+        from rl_games.algos_torch import flatten
+
+        # with torch.no_grad():
+        #     adapter = TracingAdapter(player.model, test_input, allow_non_tensor=True)
+        #     traced = torch.jit.trace(adapter, adapter.flattened_inputs, check_trace=False)
+
+        with torch.no_grad():
+            adapter = flatten.TracingAdapter(ModelWrapper(player.model), test_input, allow_non_tensor=True)
+            traced = torch.jit.trace(adapter, adapter.flattened_inputs, check_trace=False)
+            flattened_outputs = traced(*adapter.flattened_inputs)
+            print(flattened_outputs)
+            traced.save("/workspace/data/latest_player.pt")
+
         player.run()
 
     def create_player(self):

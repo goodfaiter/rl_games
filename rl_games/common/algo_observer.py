@@ -137,3 +137,87 @@ class IsaacAlgoObserver(AlgoObserver):
             self.writer.add_scalar("scores/mean", mean_scores, frame)
             self.writer.add_scalar("scores/iter", mean_scores, epoch_num)
             self.writer.add_scalar("scores/time", mean_scores, total_time)
+
+
+class VlearnAlgoObserver(AlgoObserver):
+    def __init__(self):
+        pass
+
+    def after_init(self, algo):
+        self.algo = algo
+        self.game_scores = torch_ext.AverageMeter(1, self.algo.games_to_track).to(self.algo.ppo_device)
+        self.rewards = {}
+        self.writer = self.algo.writer
+
+    def process_infos(self, infos, done_indices):
+        if not infos:
+            return
+
+        done_indices = done_indices.cpu().numpy()
+
+
+        if 'rewards' in infos:
+            for reward_name, reward_value in infos["rewards"].items():
+                if reward_name not in self.rewards:
+                    #  self.rewards[reward_name] = torch_ext.RunningAverageMeter(1).to(self.algo.ppo_device)
+                     self.rewards[reward_name] = torch_ext.ExponentialMovingAverageMeter(1, alpha=0.6).to(self.algo.ppo_device)
+                self.rewards[reward_name].update(reward_value)
+                # test = reward_name
+                # print(test)
+                    # reward = rewards['rewards']
+                    # for reward_name, reward_value in rewards.items():
+                    #     self.writer.add_scalar(f'rewards/{reward_name}', reward_value, self.algo.epoch_num)
+
+        if not isinstance(infos, dict) and len(infos) > 0 and isinstance(infos[0], dict):
+            for ind in done_indices:
+                ind = ind.item()
+                if len(infos) <= ind//self.algo.num_agents:
+                    continue
+                info = infos[ind//self.algo.num_agents]
+                game_res = None
+                if 'battle_won' in info:
+                    game_res = info['battle_won']
+                if 'scores' in info:
+                    game_res = info['scores']
+
+                if game_res is not None:
+                    self.game_scores.update(torch.from_numpy(np.asarray([game_res])).to(self.algo.ppo_device))
+
+        elif isinstance(infos, dict):
+            if 'lives' in infos:
+                # envpool
+                done_indices = np.argwhere(infos['lives'] == 0).squeeze(1)
+
+            for ind in done_indices:
+                ind = ind.item()
+                game_res = None
+                if 'battle_won' in infos:
+                    game_res = infos['battle_won']
+                if 'scores' in infos:
+                    game_res = infos['scores']
+                if game_res is not None and len(game_res) > ind//self.algo.num_agents:
+                    self.game_scores.update(torch.from_numpy(np.asarray([game_res[ind//self.algo.num_agents]])).to(self.algo.ppo_device))
+
+    def after_clear_stats(self):
+        for reward in self.rewards.values():
+            reward.clear()
+        self.game_scores.clear()
+
+    def after_print_stats(self, frame, epoch_num, total_time):
+        for reward_name, reward in self.rewards.items():
+            reward_value = reward.get_mean()
+            if reward_name == "pos_reward":
+                rew_text = "Ability of the robot to move the object towards the goal position."
+            elif reward_name == "rot_reward":
+                rew_text = "Ability of the robot to align the object with the goal orientation."
+            elif reward_name == "in_hand_rot_reward":
+                rew_text = "Ability of the robot to grasp the object in a specific orientation relative to the hand."
+            else:
+                rew_text = reward_name
+            print(f"Reward Description: {rew_text}, Value: {reward_value:.2f}")
+            self.writer.add_scalar(f'reward_components/{reward_name}', reward_value, epoch_num)
+        if self.game_scores.current_size > 0 and self.writer is not None:
+            mean_scores = self.game_scores.get_mean()
+            self.writer.add_scalar('scores/mean', mean_scores, frame)
+            self.writer.add_scalar('scores/iter', mean_scores, epoch_num)
+            self.writer.add_scalar('scores/time', mean_scores, total_time)

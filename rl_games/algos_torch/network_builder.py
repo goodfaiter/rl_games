@@ -296,7 +296,7 @@ class A2CBuilder(NetworkBuilder):
                 sigma_init = self.init_factory.create(**self.space_config['sigma_init'])
 
                 if self.fixed_sigma:
-                    self.sigma = nn.Parameter(torch.zeros(actions_num, requires_grad=True, dtype=torch.float32), requires_grad=True)
+                    self.sigma = nn.Parameter(torch.zeros(actions_num, requires_grad=False, dtype=torch.float32), requires_grad=False)
                 else:
                     self.sigma = torch.nn.Linear(out_size, actions_num)
 

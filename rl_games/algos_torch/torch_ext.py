@@ -340,6 +340,22 @@ class AverageMeter(nn.Module):
         return self.mean.squeeze(0).cpu().numpy()
 
 
+class ExponentialMovingAverageMeter(nn.Module):
+    def __init__(self, in_shape, alpha=0.3):
+        super(ExponentialMovingAverageMeter, self).__init__()
+        self.alpha = alpha
+        self.register_buffer("mean", torch.zeros(in_shape, dtype=torch.float32))
+
+    def update(self, values):
+        self.mean = self.alpha * self.mean + (1 - self.alpha) * values
+
+    def clear(self):
+        self.mean.fill_(0)
+
+    def get_mean(self):
+        return self.mean.squeeze(0).cpu().numpy()
+
+
 class IdentityRNN(nn.Module):
     def __init__(self, in_shape, out_shape):
         super(IdentityRNN, self).__init__()
