@@ -206,15 +206,7 @@ class VlearnAlgoObserver(AlgoObserver):
     def after_print_stats(self, frame, epoch_num, total_time):
         for reward_name, reward in self.rewards.items():
             reward_value = reward.get_mean()
-            if reward_name == "pos_reward":
-                rew_text = "Ability of the robot to move the object towards the goal position."
-            elif reward_name == "rot_reward":
-                rew_text = "Ability of the robot to align the object with the goal orientation."
-            elif reward_name == "in_hand_rot_reward":
-                rew_text = "Ability of the robot to grasp the object in a specific orientation relative to the hand."
-            else:
-                rew_text = reward_name
-            print(f"Reward Description: {rew_text}, Value: {reward_value:.2f}")
+            print(f"Reward Description: {reward_name}, Value: {reward_value:.2f}")
             self.writer.add_scalar(f'reward_components/{reward_name}', reward_value, epoch_num)
         if self.game_scores.current_size > 0 and self.writer is not None:
             mean_scores = self.game_scores.get_mean()
