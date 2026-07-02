@@ -269,6 +269,7 @@ class Runner:
                     agent.central_value_net.model,
                     mode=critic_mode
                 )
+        agent.epoch_num = 0
         agent.train()
 
         # Save profiling results if enabled
