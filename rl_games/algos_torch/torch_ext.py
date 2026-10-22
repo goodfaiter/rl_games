@@ -88,7 +88,6 @@ def safe_load(filename):
     return checkpoint
 
 def save_checkpoint(filename, state):
-    print("=> saving checkpoint '{}'".format(filename + '.pth'))
     safe_save(state, filename + '.pth')
 
 def load_checkpoint(filename):
@@ -96,17 +95,12 @@ def load_checkpoint(filename):
     state = safe_load(filename)
 
     # ----------------------------
-    # Fix for missing/unexpected keys:
-    # Remove the '_orig_mod.' prefix so model keys match your uncompiled model
-    if "model" in state:
-        new_model = {}
-        for k, v in state["model"].items():
-            if k.startswith("_orig_mod."):
-                new_key = k[len("_orig_mod."):]
-            else:
-                new_key = k
-            new_model[new_key] = v
-        state["model"] = new_model
+    # Fix for missing/unexpected keys: remove torch.compile's '_orig_mod.' wrapper from the keys so they match the
+    # uncompiled models (the restore runs before compiling). The actor's keys start with it, the central value
+    # critic's have it inside ('model._orig_mod.a2c_network...').
+    for name in ("model", "assymetric_vf_nets"):
+        if name in state:
+            state[name] = {k.replace("_orig_mod.", ""): v for k, v in state[name].items()}
     # ----------------------------
 
     return state

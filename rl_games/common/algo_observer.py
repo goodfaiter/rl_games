@@ -206,7 +206,6 @@ class VlearnAlgoObserver(AlgoObserver):
     def after_print_stats(self, frame, epoch_num, total_time):
         for reward_name, reward in self.rewards.items():
             reward_value = reward.get_mean()
-            print(f"Reward Description: {reward_name}, Value: {reward_value:.2f}")
             self.writer.add_scalar(f'reward_components/{reward_name}', reward_value, epoch_num)
         if self.game_scores.current_size > 0 and self.writer is not None:
             mean_scores = self.game_scores.get_mean()

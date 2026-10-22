@@ -7,6 +7,9 @@ from rl_games.algos_torch.moving_mean_std import GeneralizedMovingStats
 from rl_games.algos_torch.self_play_manager import SelfPlayManager
 from rl_games.algos_torch import torch_ext
 from rl_games.common import schedulers
+from rl_games.common.curriculum import RewardPlateauCurriculum
+from rl_games.common.early_stopping import RewardPlateauStopper
+from rl_games.common.status_display import StatusDisplay, compact, duration, progress_bar
 from rl_games.common.experience import ExperienceBuffer
 from rl_games.common.interval_summary_writer import IntervalSummaryWriter
 from rl_games.common.diagnostics import DefaultDiagnostics, PpoDiagnostics
@@ -82,7 +85,8 @@ class A2CBase(BaseAlgorithm):
             print(f'Exact experiment name requested from command line: {full_experiment_name}')
             self.experiment_name = full_experiment_name
         else:
-            self.experiment_name = config['name'] + pbt_str + datetime.now().strftime("_%d-%H-%M-%S")
+            # <train_dir>/<name>/<yyyy_mm_dd_HH_MM_SS>: the runs of a task are grouped in one folder.
+            self.experiment_name = os.path.join(config['name'] + pbt_str, datetime.now().strftime("%Y_%m_%d_%H_%M_%S"))
 
         self.config = config
         self.algo_observer = config['features']['observer']
@@ -174,6 +178,11 @@ class A2CBase(BaseAlgorithm):
         # TODO: do we still need it?
         self.ppo = config.get('ppo', True)
         self.max_epochs = self.config.get('max_epochs', -1)
+        self.early_stopping_config = self.config.get('early_stopping')
+        self.early_stopper = RewardPlateauStopper(self.early_stopping_config) if self.early_stopping_config else None
+        curriculum = self.config.get('curriculum')
+        self.curriculum = RewardPlateauCurriculum(curriculum) if curriculum else None
+        self.status = StatusDisplay()
         self.max_frames = np.max(self.config.get('max_frames', -1), self.config.get('max_steps', -1))
 
         self.is_adaptive_lr = config['lr_schedule'] == 'adaptive'
@@ -630,6 +639,53 @@ class A2CBase(BaseAlgorithm):
     def train_central_value(self):
         return self.central_value_net.train_net()
 
+    def status_lines(self, epoch_num, frame, fps_total, fps_step, total_time, mean_reward):
+        """Progress bar + rewards for the status display (see StatusDisplay)."""
+        if self.max_epochs != -1:
+            progress = f'{progress_bar(epoch_num / self.max_epochs)} epoch {epoch_num}/{self.max_epochs}'
+        elif self.max_frames != -1:
+            progress = f'{progress_bar(frame / self.max_frames)} epoch {epoch_num}'
+        else:
+            progress = f'epoch {epoch_num}'
+        parts = [progress, f'{compact(frame)} frames', f'{compact(fps_total)} fps (env {compact(fps_step)})', duration(total_time)]
+        if self.curriculum is not None:
+            parts.append(f'curriculum {self.curriculum.factor:g} ({self.curriculum.level + 1}/{len(self.curriculum.levels)})')
+        if self.last_mean_rewards > -1000000000:
+            parts.append(f'best {self.last_mean_rewards:.1f}')
+        stopper = self.early_stopper
+        if stopper is not None and stopper.best is not None and (self.curriculum is None or self.curriculum.finished):
+            parts.append(f'early stop in {max(stopper.patience - (epoch_num - stopper.best_epoch), 0)}')
+        rewards = [f'reward {mean_reward:.1f}' if mean_reward is not None else 'reward -']
+        for name, reward in getattr(self.algo_observer, 'rewards', {}).items():
+            rewards.append(f'{name} {float(reward.get_mean()):.2f}')
+        return [' | '.join(parts), ' | '.join(rewards)]
+
+    def save_with_event(self, name, message, deployment=False):
+        """Save the checkpoint nn_dir/<name>.pth (and with ``deployment`` the run's deployment policy
+        <run>/<run>.pt) and report it with its absolute path in the status display."""
+        path = os.path.abspath(os.path.join(self.nn_dir, name))
+        self.save(path)
+        if deployment:
+            policy = self.export_deployment_policy()
+            self.status.event(f'{message}: {path}.pth , {policy}')
+        else:
+            self.status.event(f'{message}: {path}.pth')
+
+    def export_deployment_policy(self):
+        """Export the current actor as the run's deployment policy <run>/<run>.pt (see algos_torch/policy_export.py)."""
+        from rl_games.algos_torch.policy_export import export_history_policy
+
+        path = os.path.abspath(os.path.join(self.experiment_dir, os.path.basename(self.experiment_dir) + '.pt'))
+        export_config = {**(self.env_info or {}).get('export', {}), **(self.config.get('export') or {})}
+        export_history_policy(self.model, self.obs_shape[0], path, export_config=export_config,
+                              clip_actions=self.config.get('clip_actions', True), verbose=False)
+        return path
+
+    @property
+    def curriculum_factor(self):
+        """Current curriculum factor (1.0 without a curriculum), handed to the env through set_train_info."""
+        return self.curriculum.factor if self.curriculum is not None else 1.0
+
     def get_full_state_weights(self):
         state = self.get_weights()
         state['epoch'] = self.epoch_num
@@ -665,6 +721,7 @@ class A2CBase(BaseAlgorithm):
         self.optimizer.load_state_dict(weights['optimizer'])
 
         self.last_mean_rewards = weights.get('last_mean_rewards', -1000000000)
+        # The curriculum is not restored: training from a checkpoint starts it at its first level.
 
         if self.vec_env is not None:
             env_state = weights.get('env_state', None)
@@ -1387,8 +1444,9 @@ class ContinuousA2CBase(A2CBase):
                 curr_frames = self.curr_frames * self.world_size if self.multi_gpu else self.curr_frames
                 self.frame += curr_frames
 
-                print_statistics(self.print_stats, curr_frames, step_time, scaled_play_time, scaled_time, 
-                                epoch_num, self.max_epochs, frame, self.max_frames)
+                fps_step = curr_frames / max(step_time, 1e-9)
+                fps_total = curr_frames / max(scaled_time, 1e-9)
+                epoch_mean_reward = None
 
                 self.write_stats(total_time, epoch_num, step_time, play_time, update_time,
                                 a_losses, c_losses, entropies, kls, last_lr, lr_mul, frame,
@@ -1402,6 +1460,7 @@ class ContinuousA2CBase(A2CBase):
                     mean_shaped_rewards = self.game_shaped_rewards.get_mean()
                     mean_lengths = self.game_lengths.get_mean()
                     self.mean_rewards = mean_rewards[0]
+                    epoch_mean_reward = float(mean_rewards[0])
 
                     for i in range(self.value_size):
                         rewards_name = 'rewards' if i == 0 else 'rewards{0}'.format(i)
@@ -1423,38 +1482,65 @@ class ContinuousA2CBase(A2CBase):
 
                     if self.save_freq > 0:
                         if epoch_num % self.save_freq == 0:
-                            self.save(os.path.join(self.nn_dir, 'last_' + checkpoint_name))
+                            self.save_with_event('last_' + checkpoint_name, f'epoch {epoch_num}: saved checkpoint')
 
                     if mean_rewards[0] > self.last_mean_rewards and epoch_num >= self.save_best_after:
-                        print('saving next best rewards: ', mean_rewards)
                         self.last_mean_rewards = mean_rewards[0]
-                        self.save(os.path.join(self.nn_dir, self.config['name']))
+                        # nn/<run>.pth, the same policy as the run's deployment policy <run>/<run>.pt
+                        self.save_with_event(os.path.basename(self.experiment_dir), f'epoch {epoch_num}: saved best ({mean_rewards[0]:.2f})',
+                                             deployment=True)
 
                         if 'score_to_win' in self.config:
                             if self.last_mean_rewards > self.config['score_to_win']:
-                                print('Maximum reward achieved. Network won!')
-                                self.save(os.path.join(self.nn_dir, checkpoint_name))
+                                self.save_with_event(checkpoint_name, 'Maximum reward achieved. Network won! Saved')
                                 should_exit = True
+
+                if self.curriculum is not None:
+                    self.writer.add_scalar('curriculum/factor', self.curriculum.factor, epoch_num)
+                    if self.game_rewards.current_size > 0 and self.curriculum.update(epoch_num, float(mean_rewards[0])):
+                        self.status.event(f'CURRICULUM: level {self.curriculum.level + 1}/{len(self.curriculum.levels)}, '
+                                          f'factor {self.curriculum.factor:g} from epoch {epoch_num}')
+                        # Rewards of different levels are not comparable: restart the best checkpoint and early stopping,
+                        # and the episode windows (games_to_track), so the new level's mean only has its own episodes.
+                        self.last_mean_rewards = -1000000000
+                        self.game_rewards.clear()
+                        self.game_shaped_rewards.clear()
+                        self.game_lengths.clear()
+                        if self.early_stopping_config:
+                            self.early_stopper = RewardPlateauStopper(self.early_stopping_config)
+
+                curriculum_done = self.curriculum is None or self.curriculum.finished
+                if self.early_stopper is not None and curriculum_done and self.game_rewards.current_size > 0 \
+                        and self.early_stopper.update(epoch_num, float(mean_rewards[0])):
+                    stopper = self.early_stopper
+                    self.status.event(f'EARLY STOPPING: no reward improvement > {stopper.min_delta:.0%} in {stopper.patience} '
+                                      f'epochs (best {stopper.best:.2f} at epoch {stopper.best_epoch})')
+                    self.save_with_event('last_' + self.config['name'] + '_ep_' + str(epoch_num) \
+                        + '_rew_' + str(mean_rewards).replace('[', '_').replace(']', '_'), f'epoch {epoch_num}: saved last')
+                    should_exit = True
 
                 if epoch_num >= self.max_epochs and self.max_epochs != -1:
                     if self.game_rewards.current_size == 0:
-                        print('WARNING: Max epochs reached before any env terminated at least once')
+                        self.status.event('WARNING: Max epochs reached before any env terminated at least once')
                         mean_rewards = -np.inf
 
-                    self.save(os.path.join(self.nn_dir, 'last_' + self.config['name'] + '_ep_' + str(epoch_num) \
-                        + '_rew_' + str(mean_rewards).replace('[', '_').replace(']', '_')))
-                    print('MAX EPOCHS NUM!')
+                    self.status.event('MAX EPOCHS NUM!')
+                    self.save_with_event('last_' + self.config['name'] + '_ep_' + str(epoch_num) \
+                        + '_rew_' + str(mean_rewards).replace('[', '_').replace(']', '_'), f'epoch {epoch_num}: saved last')
                     should_exit = True
 
                 if self.frame >= self.max_frames and self.max_frames != -1:
                     if self.game_rewards.current_size == 0:
-                        print('WARNING: Max frames reached before any env terminated at least once')
+                        self.status.event('WARNING: Max frames reached before any env terminated at least once')
                         mean_rewards = -np.inf
 
-                    self.save(os.path.join(self.nn_dir, 'last_' + self.config['name'] + '_frame_' + str(self.frame) \
-                        + '_rew_' + str(mean_rewards).replace('[', '_').replace(']', '_')))
-                    print('MAX FRAMES NUM!')
+                    self.status.event('MAX FRAMES NUM!')
+                    self.save_with_event('last_' + self.config['name'] + '_frame_' + str(self.frame) \
+                        + '_rew_' + str(mean_rewards).replace('[', '_').replace(']', '_'), f'frame {self.frame}: saved last')
                     should_exit = True
+
+                if self.print_stats:
+                    self.status.update(self.status_lines(epoch_num, frame, fps_total, fps_step, total_time, epoch_mean_reward))
 
                 update_time = 0
 

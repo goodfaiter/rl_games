@@ -262,7 +262,7 @@ class Runner:
         with open(reward_file_path, "w") as f:
             for name, reward in self.algo_observer.rewards.items():
                 f.write(f"{name} {reward.get_mean():.2f},\n")
-        self.freeze_player(agent, os.path.join(agent.experiment_dir, f"{os.path.basename(agent.experiment_dir)}.pt"))
+        # The run's deployment policy <run>/<run>.pt is written with every best checkpoint (A2CBase.save_with_event).
 
     def run_play(self, args):
         """Run the inference procedure from the algorithm passed in.
@@ -277,7 +277,14 @@ class Runner:
         _override_sigma(player, args)
         checkpoint = args.get('checkpoint')
         if checkpoint:
-            self.freeze_player(player, os.path.splitext(checkpoint)[0] + '.pt')
+            # nn/ holds only .pth checkpoints: the .pt goes to the run folder, named after the checkpoint
+            # (never <run>/<run>.pt, the run's latest best written during training).
+            folder, name = os.path.split(os.path.splitext(checkpoint)[0])
+            if os.path.basename(folder) == 'nn':
+                folder = os.path.dirname(folder)
+            if name == os.path.basename(os.path.abspath(folder)):
+                name += '_play'
+            self.freeze_player(player, os.path.join(folder, name + '.pt'))
 
         player.run()
 

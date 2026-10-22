@@ -200,7 +200,8 @@ class SACAgent(BaseAlgorithm):
             print(f'Exact experiment name requested from command line: {full_experiment_name}')
             self.experiment_name = full_experiment_name
         else:
-            self.experiment_name = config['name'] + pbt_str + datetime.now().strftime("_%d-%H-%M-%S")
+            # <train_dir>/<name>/<yyyy_mm_dd_HH_MM_SS>: the runs of a task are grouped in one folder.
+            self.experiment_name = os.path.join(config['name'] + pbt_str, datetime.now().strftime("%Y_%m_%d_%H_%M_%S"))
         self.train_dir = config.get('train_dir', 'runs')
 
         # a folder inside of train_dir containing everything related to a particular experiment
