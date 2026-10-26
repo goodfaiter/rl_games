@@ -275,12 +275,14 @@ def export_history_policy(model, stacked_obs_dim, path, export_config=None, clip
     return path
 
 
-def check_exported_policy(path, model, stacked_obs_dim, atol=1e-4, verbose=True):
+def check_exported_policy(path, model, stacked_obs_dim, atol=1e-4, rtol=1e-5, verbose=True):
     """Sanity check a saved policy against the live model on an all-ones observation.
 
     The saved file is fed single-frame observations of 1.0 until its history is full, and its
     action is compared with the live model's scaled action (full model forward on its own device,
-    then ``scale_actions``) for a stacked observation of 1.0. Raises ``RuntimeError`` on mismatch.
+    then ``scale_actions``) for a stacked observation of 1.0. Raises ``RuntimeError`` on mismatch beyond
+    ``atol + rtol * |expected|`` (an all-ones observation can be far out of the normalized range, and the action then
+    large, e.g. ~1800, where float32 rounding alone exceeds a purely absolute tolerance).
     """
     policy = torch.jit.load(str(path), map_location='cpu')
     policy.reset()
@@ -301,7 +303,7 @@ def check_exported_policy(path, model, stacked_obs_dim, atol=1e-4, verbose=True)
     expected = scale_actions(mu, policy.action_lower, policy.action_upper, policy.clip_actions)
 
     max_err = (exported - expected).abs().max().item()
-    if not torch.allclose(exported, expected, atol=atol, rtol=0.0):
+    if not torch.allclose(exported, expected, atol=atol, rtol=rtol):
         raise RuntimeError(
             f"Exported policy {path} does not match the live model on an all-ones observation "
             f"(max abs error {max_err:.3g}): exported {exported.tolist()}, expected {expected.tolist()}"
