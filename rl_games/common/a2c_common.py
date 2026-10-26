@@ -653,8 +653,8 @@ class A2CBase(BaseAlgorithm):
         if self.last_mean_rewards > -1000000000:
             parts.append(f'best {self.last_mean_rewards:.1f}')
         stopper = self.early_stopper
-        if stopper is not None and stopper.best is not None and (self.curriculum is None or self.curriculum.finished):
-            parts.append(f'early stop in {max(stopper.patience - (epoch_num - stopper.best_epoch), 0)}')
+        if stopper is not None and stopper.start_epoch is not None and (self.curriculum is None or self.curriculum.finished):
+            parts.append(f'early stop in {stopper.epochs_left(epoch_num)}')
         rewards = [f'reward {mean_reward:.1f}' if mean_reward is not None else 'reward -']
         for name, reward in getattr(self.algo_observer, 'rewards', {}).items():
             rewards.append(f'{name} {float(reward.get_mean()):.2f}')
