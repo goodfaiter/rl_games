@@ -8,7 +8,6 @@ from rl_games.algos_torch.self_play_manager import SelfPlayManager
 from rl_games.algos_torch import torch_ext
 from rl_games.common import schedulers
 from rl_games.common.curriculum import RewardPlateauCurriculum
-from rl_games.common.early_stopping import RewardPlateauStopper
 from rl_games.common.status_display import StatusDisplay, compact, duration, progress_bar
 from rl_games.common.experience import ExperienceBuffer
 from rl_games.common.interval_summary_writer import IntervalSummaryWriter
@@ -178,8 +177,6 @@ class A2CBase(BaseAlgorithm):
         # TODO: do we still need it?
         self.ppo = config.get('ppo', True)
         self.max_epochs = self.config.get('max_epochs', -1)
-        self.early_stopping_config = self.config.get('early_stopping')
-        self.early_stopper = RewardPlateauStopper(self.early_stopping_config) if self.early_stopping_config else None
         curriculum = self.config.get('curriculum')
         self.curriculum = RewardPlateauCurriculum(curriculum) if curriculum else None
         self.status = StatusDisplay()
@@ -652,9 +649,9 @@ class A2CBase(BaseAlgorithm):
             parts.append(f'curriculum {self.curriculum.factor:g} ({self.curriculum.level + 1}/{len(self.curriculum.levels)})')
         if self.last_mean_rewards > -1000000000:
             parts.append(f'best {self.last_mean_rewards:.1f}')
-        stopper = self.early_stopper
-        if stopper is not None and stopper.start_epoch is not None and (self.curriculum is None or self.curriculum.finished):
-            parts.append(f'early stop in {stopper.epochs_left(epoch_num)}')
+        if self.curriculum is not None:
+            label = 'early stop' if self.curriculum.finished else 'next level'
+            parts.append(f'{label} in {self.curriculum.epochs_left(epoch_num)}')
         rewards = [f'reward {mean_reward:.1f}' if mean_reward is not None else 'reward -']
         for name, reward in getattr(self.algo_observer, 'rewards', {}).items():
             rewards.append(f'{name} {float(reward.get_mean()):.2f}')
@@ -1497,27 +1494,23 @@ class ContinuousA2CBase(A2CBase):
 
                 if self.curriculum is not None:
                     self.writer.add_scalar('curriculum/factor', self.curriculum.factor, epoch_num)
-                    if self.game_rewards.current_size > 0 and self.curriculum.update(epoch_num, float(mean_rewards[0])):
+                    step = self.curriculum.update(epoch_num, float(mean_rewards[0])) if self.game_rewards.current_size > 0 else None
+                    if step == self.curriculum.NEXT_LEVEL:
                         self.status.event(f'CURRICULUM: level {self.curriculum.level + 1}/{len(self.curriculum.levels)}, '
                                           f'factor {self.curriculum.factor:g} from epoch {epoch_num}')
-                        # Rewards of different levels are not comparable: restart the best checkpoint and early stopping,
-                        # and the episode windows (games_to_track), so the new level's mean only has its own episodes.
+                        # Rewards of different levels are not comparable: restart the best checkpoint and the episode
+                        # windows (games_to_track), so the new level's mean only has its own episodes.
                         self.last_mean_rewards = -1000000000
                         self.game_rewards.clear()
                         self.game_shaped_rewards.clear()
                         self.game_lengths.clear()
-                        if self.early_stopping_config:
-                            self.early_stopper = RewardPlateauStopper(self.early_stopping_config)
-
-                curriculum_done = self.curriculum is None or self.curriculum.finished
-                if self.early_stopper is not None and curriculum_done and self.game_rewards.current_size > 0 \
-                        and self.early_stopper.update(epoch_num, float(mean_rewards[0])):
-                    stopper = self.early_stopper
-                    self.status.event(f'EARLY STOPPING: no reward improvement > {stopper.min_delta:.0%} in {stopper.patience} '
-                                      f'epochs (best {stopper.best:.2f} at epoch {stopper.best_epoch})')
-                    self.save_with_event('last_' + self.config['name'] + '_ep_' + str(epoch_num) \
-                        + '_rew_' + str(mean_rewards).replace('[', '_').replace(']', '_'), f'epoch {epoch_num}: saved last')
-                    should_exit = True
+                    elif step == self.curriculum.STOP:
+                        stopper = self.curriculum.plateau
+                        self.status.event(f'EARLY STOPPING: no reward improvement > {stopper.min_delta:.0%} in {stopper.patience} '
+                                          f'epochs on the last curriculum level (best {stopper.best:.2f})')
+                        self.save_with_event('last_' + self.config['name'] + '_ep_' + str(epoch_num) \
+                            + '_rew_' + str(mean_rewards).replace('[', '_').replace(']', '_'), f'epoch {epoch_num}: saved last')
+                        should_exit = True
 
                 if epoch_num >= self.max_epochs and self.max_epochs != -1:
                     if self.game_rewards.current_size == 0:
