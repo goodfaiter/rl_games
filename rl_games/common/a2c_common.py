@@ -1301,6 +1301,9 @@ class ContinuousA2CBase(A2CBase):
 
         for mini_ep in range(0, self.mini_epochs_num):
             ep_kls = []
+            # Shuffled minibatches: the rollout is stored env-major (swap_and_flatten01), so unshuffled slices hold only
+            # minibatch_size / horizon_length envs' consecutive trajectories.
+            self.dataset.apply_permutation()
             for i in range(len(self.dataset)):
                 a_loss, c_loss, entropy, kl, last_lr, lr_mul, cmu, csigma, b_loss = self.train_actor_critic(self.dataset[i])
                 a_losses.append(a_loss)

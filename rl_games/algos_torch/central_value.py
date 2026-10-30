@@ -126,7 +126,7 @@ class CentralValueTrain(nn.Module):
                 config['print_stats'] = False
                 config['lr_schedule'] = None
 
-        self.dataset = datasets.PPODataset(self.batch_size, self.minibatch_size, True, self.is_rnn, self.ppo_device, self.seq_length)
+        self.dataset = datasets.PPODataset(self.batch_size, self.minibatch_size, True, self.is_rnn, self.ppo_device, self.seq_length, permute=True)
 
     def update_lr(self, lr):
         if self.multi_gpu:
@@ -254,6 +254,8 @@ class CentralValueTrain(nn.Module):
         for epoch_idx in range(self.mini_epoch):
             if self.config.get('freeze_critic', False):
                 break
+            # Shuffled minibatches: the rollout is stored env-major, so unshuffled slices hold a few envs' trajectories.
+            self.dataset.apply_permutation()
             for i in range(len(self.dataset)):
                 # Use mixed precision for training
                 with torch.amp.autocast('cuda', enabled=self.mixed_precision):

@@ -33,12 +33,7 @@ class PPODataset(Dataset):
     def update_mu_sigma(self, mu, sigma):
         """Update the mu and sigma values in the dataset."""
         start, end = self.last_range
-        # Ensure the permutation does not break the logic for updating.
-        # if self.permute:
-        #    original_indices = self.permutation_indices[start:end]
-        #    self.values_dict['mu'][original_indices] = mu
-        #    self.values_dict['sigma'][original_indices] = sigma
-        # else:
+        # apply_permutation reorders the stored tensors themselves, so the minibatch range indexes them directly.
         self.values_dict['mu'][start:end] = mu
         self.values_dict['sigma'][start:end] = sigma
 
